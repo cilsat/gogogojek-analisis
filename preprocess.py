@@ -3,9 +3,10 @@
 import pandas as pd
 import sqlite3 as sq
 import sys
+import re
 import json
 
-db = sq.connect('/home/cilsat/dev/visdat-gojek/gojek.db')
+db = sq.connect('gojek.db')
 c = db.cursor()
 
 def pp_tables():
@@ -13,7 +14,7 @@ def pp_tables():
     c.execute("SELECT name FROM sqlite_master WHERE type='table';")
     names = c.fetchall()
     # function to parse rows
-    #p = re.compile(r'(?<![0-9]|:|,|\{)"(?![0-9]|:|,"|\})')
+    p = re.compile(r'(?<![0-9]|:|,|\{)"(?![0-9]|:|,"|\})')
     #parse = lambda r: eval(p.sub('', r[r.find('{'):r.rfind('}')+1].replace(':""',':None').replace(':null',':None').replace(':true',':True').replace(':false',':False')))
     parse = json.loads
 
@@ -26,7 +27,7 @@ def pp_tables():
         err = []
         for n, r in c.fetchall():
             try:
-                row.append(parse(r))
+                row.append(parse(p.sub('',r.replace('\t',' '))))
             except:
                 err.append(n)
         print('len: ' + str(len(row)) + ' err: ' + str(len(err)))
@@ -36,16 +37,19 @@ def pp_tables():
     del row, err
     return tables, errors
     
-def pp_bookings():
-    db = sq.connect('/home/cilsat/dat/gojek.db')
-    c = db.cursor()
-
+def pp_bookings(keys=['dispatchTime', 'arrivalTime', 'closingTime', 'driverCalledTime', 'cancelTime', 'timeField', 'driverLatitude', 'driverLongitude', 'driverPickupLocation', 'driverCloseLocation']):
     p = re.compile(r'(?<![0-9]|:|,|\{)"(?![0-9]|:|,"|\})')
-    parse = lambda r: eval(p.sub('', r[r.find('{'):r.rfind('}')+1].replace(':""',':None').replace(':null',':None').replace(':true',':True').replace(':false',':False')))
-
     c.execute(u'SELECT * FROM bookings')
-    df = pd.DataFrame([parse(n) for _,n in c.fetchall()])
-    return df
+    bookings = []
+    for n, r in c.fetchall():
+        try:
+            row = json.loads(p.sub('', r.replace('\t',' ')))
+            if keys:
+                [row.pop(k) for k in row.keys() if k not in keys]
+            bookings.append(row)
+        except:
+            print(n)
+    return bookings
 
 def pp_customers():
     db = sq.connect('/home/cilsat/dat/gojek.db')
