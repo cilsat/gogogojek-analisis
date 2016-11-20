@@ -1,6 +1,7 @@
 #!/usr/bin/python2
 
 import pandas as pd
+import numpy as np
 import sqlite3 as sq
 import sys
 import re
@@ -37,7 +38,7 @@ def pp_tables():
     del row, err
     return tables, errors
     
-def pp_bookings(keys=['dispatchTime', 'arrivalTime', 'closingTime', 'driverCalledTime', 'cancelTime', 'timeField', 'driverLatitude', 'driverLongitude', 'driverPickupLocation', 'driverCloseLocation']):
+def get_bookings(keys=['dispatchTime', 'arrivalTime', 'closingTime', 'driverCalledTime', 'cancelTime', 'timeField', 'driverLatitude', 'driverLongitude', 'driverPickupLocation', 'driverCloseLocation']):
     p = re.compile(r'(?<![0-9]|:|,|\{)"(?![0-9]|:|,"|\})')
     c.execute(u'SELECT * FROM bookings')
     bookings = []
@@ -51,12 +52,30 @@ def pp_bookings(keys=['dispatchTime', 'arrivalTime', 'closingTime', 'driverCalle
             print(n)
     return bookings
 
-def pp_customers():
-    db = sq.connect('/home/cilsat/dat/gojek.db')
-    c = db.cursor()
+def pp_bookings():
+    book = get_bookings(keys=['driverPickupLocation'])
+    book = [b.values()[0] for b in book]
+    loc = np.array([b.split(',') for b in book if b], dtype=float)
+    jkt = [-6.21462, 106.84513]
+    loc = loc[np.all(loc - jkt < 1., axis=-1)]
+    return pd.DataFrame(loc, columns=['lat', 'long'])
 
-    parse = lambda r: eval(r.replace(':null',':None').replace(':false',':False').replace(':true',':True'))
+def agg_bookings(df_in, json_out='heat.json', ncell=2000):
+    cell = ncell**0.5
+    
+    # compare each location to a grid and calc which cell it's closest to
+    x = np.abs(np.subtract.outer(df_in.lat.values,
+        np.linspace(df_in.lat.min(), df_in.lat.max(), cell)))
+    y = np.abs(np.subtract.outer(df_in.long.values,
+        np.linspace(df_in.long.min(), df_in.long.max(), cell)))
 
-    c.execute(u'SELECT * FROM customers')
-    return pd.DataFrame([parse[n] for _,n in c.fetchall()])
+    df_in['x'] = x.argmin(axis=-1)
+    df_in['y'] = y.argmin(axis=-1)
+
+    count = df_in.groupby(['x','y']).lat.count()
+
+    if json_out:
+        count.to_json(json_out)
+    else:
+        return count
 
