@@ -2,7 +2,6 @@
 
 import pandas as pd
 import numpy as np
-import MySQLdb as sq
 from pymongo import MongoClient
 from datetime import datetime
 from django.utils.dateparse import parse_datetime
@@ -10,12 +9,8 @@ import sys
 import re
 import json
 
-db = sq.connect(host='localhost', user='root', passwd='root', db='gojek', unix_socket='/run/mysqld/mysqld.sock')
-c = db.cursor()
-
 client = MongoClient()
 bookings = client['gojek']['bookings']
-addresses = client['gojek']['addresses']
 
 default_keys=['dispatchTime', 'arrivalTime', 'closingTime', 'driverCalledTime', 'cancelTime', 'timeField', 'driverLatitude', 'driverLongitude', 'driverPickupLocation', 'driverCloseLocation']
 
@@ -48,6 +43,11 @@ def pp_tables():
     return tables, errors
     
 def get_bookings(keys=None, chunksize=100000):
+    import MySQLdb as sq
+
+    db = sq.connect(host='localhost', user='root', passwd='root', db='gojek', unix_socket='/run/mysqld/mysqld.sock')
+    c = db.cursor()
+
     p = re.compile(r'(?<![0-9]|:|,|\{)"(?![0-9]|:|,"|\})')
     datetimes = ['timeField', 'cancelTime', 'feedbackTime']
     offset = 0
@@ -127,8 +127,15 @@ def pp_bookings():
     loc = loc[np.all(loc - jkt < 1., axis=-1)]
     return pd.DataFrame(loc, columns=['lat', 'long'])
 
-def agg_bookings(df_in, json_out='heat.json', ncell=2000):
-    cell = ncell**0.5
+def agg_bookings(req, res):
+    req = json.loads(json_in)
+    lat0 = req['lat0']
+    long0 = req['long0']
+    lat1 = req['lat1']
+    long1 = req['long1']
+    time_from = req['time_from']
+    time_to = req['time_to']
+    n_items = req['n_items']
     
     # compare each location to a grid and calc which cell it's closest to
     x = np.abs(np.subtract.outer(df_in.lat.values,
