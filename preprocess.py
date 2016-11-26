@@ -2,17 +2,26 @@
 
 import pandas as pd
 import numpy as np
-import sqlite3 as sq
+import MySQLdb as sq
+from pymongo import MongoClient
+from datetime import datetime
+from django.utils.dateparse import parse_datetime
 import sys
 import re
 import json
 
-db = sq.connect('gojek.db')
+db = sq.connect(host='localhost', user='root', passwd='root', db='gojek', unix_socket='/run/mysqld/mysqld.sock')
 c = db.cursor()
+
+client = MongoClient()
+bookings = client['gojek']['bookings']
+addresses = client['gojek']['addresses']
+
+default_keys=['dispatchTime', 'arrivalTime', 'closingTime', 'driverCalledTime', 'cancelTime', 'timeField', 'driverLatitude', 'driverLongitude', 'driverPickupLocation', 'driverCloseLocation']
 
 def pp_tables():
     # get table names
-    c.execute("SELECT name FROM sqlite_master WHERE type='table';")
+    c.execute("select name from sqlite_master where type='table';")
     names = c.fetchall()
     # function to parse rows
     p = re.compile(r'(?<![0-9]|:|,|\{)"(?![0-9]|:|,"|\})')
@@ -22,7 +31,7 @@ def pp_tables():
     tables = {}
     errors = {}
     for t in names:
-        c.execute("SELECT * FROM %s" % t)
+        c.execute("select * from %s" % t)
         print >> sys.stderr, "table: %s" % t[0]
         row = []
         err = []
@@ -38,24 +47,82 @@ def pp_tables():
     del row, err
     return tables, errors
     
-def get_bookings(keys=['dispatchTime', 'arrivalTime', 'closingTime', 'driverCalledTime', 'cancelTime', 'timeField', 'driverLatitude', 'driverLongitude', 'driverPickupLocation', 'driverCloseLocation']):
+def get_bookings(keys=None, chunksize=100000):
     p = re.compile(r'(?<![0-9]|:|,|\{)"(?![0-9]|:|,"|\})')
-    c.execute(u'SELECT * FROM bookings')
-    bookings = []
-    for n, r in c.fetchall():
+    datetimes = ['timeField', 'cancelTime', 'feedbackTime']
+    offset = 0
+    while True:
+        book = []
+        address = []
+        success = 0
+        fail = 0
+        sql = "select * from bookings limit %d offset %d;" % (chunksize, offset)
+        c.execute(sql)
+        for n, r in c.fetchall():
+            try:
+                assert r.find('Internal Server Error') < 0
+                start = r.find('routePolyline')
+                end = r.find('driverCloseLocation')
+                r = r[:start] + r[end:]
+                row = json.loads(p.sub('', r), strict=False)
+
+                if keys:
+                    [row.pop(k) for k in row.keys() if k not in keys]
+
+                for k in row.keys():
+                    if k == 'timeField' and row[k]:
+                        row[k] = parse_datetime(row[k])
+                    elif k.endswith('Time') and row[k]:
+                        try: row[k] = datetime.fromtimestamp(row[k]/1000)
+                        except: row[k] = parse_datetime(row[k])
+                    elif k == 'addresses':
+                        add = row[k][0]
+                        if add['closeTime']:
+                            add['closeTime'] = parse_datetime(add['closeTime'])
+                        if add['latLongDestination']:
+                            lat, lon = add['latLongDestination'].split(',')
+                            add['latDestination'] = float(lat)
+                            add['longDestination'] = float(lon)
+                            add.pop('latLongDestination')
+                        address.append(add)
+
+                book.append(row)
+                success += 1
+            except:
+                fail += 1
         try:
-            row = json.loads(p.sub('', r.replace('\t',' ')))
-            if keys:
-                [row.pop(k) for k in row.keys() if k not in keys]
-            bookings.append(row)
+            bookings.insert_many(book)
+            if len(address) > 0:
+                addresses.insert_many(address)
+            print(str(offset) + ': success')
+            print('parsed / failed')
+            print(str(success) + ' / ' + str(fail))
         except:
-            print(n)
-    return bookings
+            print(str(offset) + ': failed')
+
+        if success+fail < chunksize: break
+        offset += chunksize
+
+def pp_addresses():
+    add = pd.DataFrame([a for a in addresses.find({}, {
+        '_id':0, 'closeTime':1, 'latDestination':1, 'longDestination':1})])
+
+    jkt = [-6.21462, 106.84513]
+
 
 def pp_bookings():
-    book = get_bookings(keys=['driverPickupLocation'])
-    book = [b.values()[0] for b in book]
-    loc = np.array([b.split(',') for b in book if b], dtype=float)
+    loc = []
+    cancelled = 0
+    for b in book:
+        if b:
+            try:
+                loc.append(b.values()[0].split(','))
+            except:
+                cancelled += 1
+    print('booked / cancelled')
+    print(str(len(loc)) + ' / ' + str(len(cancelled)))
+
+    loc = np.array(loc, dtype=float)
     jkt = [-6.21462, 106.84513]
     loc = loc[np.all(loc - jkt < 1., axis=-1)]
     return pd.DataFrame(loc, columns=['lat', 'long'])
