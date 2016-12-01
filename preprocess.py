@@ -4,10 +4,7 @@ import pandas as pd
 import numpy as np
 from pymongo import MongoClient
 from datetime import datetime
-from django.utils.dateparse import parse_datetime
-import sys
 import re
-import json
 
 client = MongoClient()
 bookings = client['gojek']['bookings']
@@ -44,6 +41,8 @@ def pp_tables():
     
 def get_bookings(keys=None, chunksize=100000):
     import MySQLdb as sq
+    from django.utils.dateparse import parse_datetime
+    import json
 
     db = sq.connect(host='localhost', user='root', passwd='root', db='gojek', unix_socket='/run/mysqld/mysqld.sock')
     c = db.cursor()
@@ -152,4 +151,68 @@ def agg_bookings(req, res):
     count = df.groupby([dx, dy]).latOrigin.count()
     count[:] = (count.astype(float)/count.max())**0.5
     return [[k[0], k[1], v] for k, v in count.iteritems()]
+
+def get_loc():
+    import requests
+    clean = MongoClient().gojek.clean
+    data = pd.DataFrame([c for c in clean.find({}, {'_id':0, 'latOrigin':1, 'longOrigin':1, 'latDestination':1, 'longDestination':1})])
+    orig = data[['latOrigin', 'longOrigin']].astype(str).values.tolist()
+    dest = data[['latDestination', 'longDestination']].astype(str).values.tolist()
+    api = 'https://maps.googleapis.com/maps/api/geocode/json'
+    key = 'AIzaSyADRaHt8UYaaQqTZM4F5GH4HFgCzIXjJVw'
+    result_type = 'street_address'
+    payload = {'key':key, 'result_type':result_type}
+
+    orig_full = []
+    dest_full = []
+    fail = []
+    for n in range(len(orig)):
+        try:
+            payload['latlng'] = ','.join(orig[n])
+            r = requests.get(api, payload)
+            res = r.json()
+            assert res['status'] == 'OK'
+            orig_full.append(res['results'])
+
+            payload['latlng'] = ','.join(dest[n])
+            r = requests.get(api, payload)
+            res = r.json()
+            assert res['status'] == 'OK'
+            dest_full.append(res['results'])
+
+            print(n, res['results'][0]['formatted_address'])
+        except:
+            fail.append(n)
+        
+    return orig_full, dest_full, fail
+
+def agg_delta(self, req):
+    lat_from = req['lat_from']
+    long_from = req['long_from']
+    lat_to = req['lat_to']
+    long_to = req['long_to']
+    time_from = req['time_from']
+    time_to = req['time_to']
+    delta = req['delta']
+
+    lat_n = (lat_to - lat_from)/delta
+    long_n = (long_to - long_from)/delta
+
+    day = datetime(2015,11,23)
+    start = day + timedelta(hours=time_from)
+    end = day + timedelta(hours=time_to)
+    df = self.data.loc[(self.data.idTime > start) &
+            (self.data.idTime < end) &
+            (self.data.latOrigin > lat_from) &
+            (self.data.latOrigin < lat_to) &
+            (self.data.longOrigin > long_from) &
+            (self.data.longOrigin < long_to)]
+
+    hist, x, y = np.histogram2d(x=df.latOrigin, y=df.longOrigin,
+            bins=[np.linspace(lat_from, lat_to, lat_n),
+                np.linspace(long_from, long_to, long_n)])
+
+    arg = np.argwhere(hist)
+    hist[:] = np.sqrt(hist/hist.max())
+    return np.dstack([x[arg[:,0]], y[arg[:,1]], hist[hist > 0]]).tolist()[0]
 
