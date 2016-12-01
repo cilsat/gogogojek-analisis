@@ -12,7 +12,7 @@ import json
 client = MongoClient()
 bookings = client['gojek']['bookings']
 
-default_keys=['dispatchTime', 'arrivalTime', 'closingTime', 'driverCalledTime', 'cancelTime', 'timeField', 'driverLatitude', 'driverLongitude', 'driverPickupLocation', 'driverCloseLocation']
+default_keys=['closingTime', 'cancelTime', 'addresses']
 
 def pp_tables():
     # get table names
@@ -53,7 +53,6 @@ def get_bookings(keys=None, chunksize=100000):
     offset = 0
     while True:
         book = []
-        address = []
         success = 0
         fail = 0
         sql = "select * from bookings limit %d offset %d;" % (chunksize, offset)
@@ -81,10 +80,9 @@ def get_bookings(keys=None, chunksize=100000):
                             add['closeTime'] = parse_datetime(add['closeTime'])
                         if add['latLongDestination']:
                             lat, lon = add['latLongDestination'].split(',')
-                            add['latDestination'] = float(lat)
-                            add['longDestination'] = float(lon)
-                            add.pop('latLongDestination')
-                        address.append(add)
+                            row['latDestination'] = float(lat)
+                            row['longDestination'] = float(lon)
+                            row.pop(k)
 
                 book.append(row)
                 success += 1
@@ -92,8 +90,6 @@ def get_bookings(keys=None, chunksize=100000):
                 fail += 1
         try:
             bookings.insert_many(book)
-            if len(address) > 0:
-                addresses.insert_many(address)
             print(str(offset) + ': success')
             print('parsed / failed')
             print(str(success) + ' / ' + str(fail))
@@ -128,28 +124,32 @@ def pp_bookings():
     return pd.DataFrame(loc, columns=['lat', 'long'])
 
 def agg_bookings(req, res):
-    req = json.loads(json_in)
-    lat0 = req['lat0']
-    long0 = req['long0']
-    lat1 = req['lat1']
-    long1 = req['long1']
+    lat_from = req['lat_from']
+    long_from = req['long_from']
+    lat_to = req['lat_to']
+    long_to = req['long_to']
     time_from = req['time_from']
     time_to = req['time_to']
-    n_items = req['n_items']
-    
+    cell = req['n_items']**0.5
+
+    day = datetime(2015,11,23)
+    start = day + timedelta(hours=time_from)
+    end = day + timedelta(hours=time_to)
+    df = self.data.loc[(self.data.idTime > start) &
+            (self.data.idTime < end) &
+            (self.data.latOrigin > lat_from) &
+            (self.data.latOrigin < lat_to) &
+            (self.data.longOrigin > long_from) &
+            (self.data.longOrigin < long_to),
+            ['latOrigin', 'longOrigin']]
+
     # compare each location to a grid and calc which cell it's closest to
-    x = np.abs(np.subtract.outer(df_in.lat.values,
-        np.linspace(df_in.lat.min(), df_in.lat.max(), cell)))
-    y = np.abs(np.subtract.outer(df_in.long.values,
-        np.linspace(df_in.long.min(), df_in.long.max(), cell)))
+    x = np.linspace(lat_from, lat_to, cell)
+    y = np.linspace(long_from, long_to, cell)
+    dx = x[np.abs(np.subtract.outer(df.latOrigin, x)).argmin(axis=-1)]
+    dy = y[np.abs(np.subtract.outer(df.longOrigin, y)).argmin(axis=-1)]
 
-    df_in['x'] = x.argmin(axis=-1)
-    df_in['y'] = y.argmin(axis=-1)
-
-    count = df_in.groupby(['x','y']).lat.count()
-
-    if json_out:
-        count.to_json(json_out)
-    else:
-        return count
+    count = df.groupby([dx, dy]).latOrigin.count()
+    count[:] = (count.astype(float)/count.max())**0.5
+    return [[k[0], k[1], v] for k, v in count.iteritems()]
 
